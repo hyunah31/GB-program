@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>학기말 프로그램 운영</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+    import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBWNEwOeuCXShXGV368suRElZwcA5IcmFo",
+      authDomain: "gb-program.firebaseapp.com",
+      projectId: "gb-program",
+      storageBucket: "gb-program.firebasestorage.app",
+      messagingSenderId: "542495551183",
+      appId: "1:542495551183:web:97db58569e89f2497051ba"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    let schedules = {};
+    let currentView = 'home';
+    let selectedGrade = 1;
+    let selectedCell = null;
+    let modalData = { class: '', subject: '', activity: '', classNum: null };
+
+    onSnapshot(collection(db, 'schedules'), (snapshot) => {
+      schedules = {};
+      snapshot.forEach((doc) => {
+        schedules[doc.id] = doc.data();
+      });
+      render();
+    });
+
+    const gradePeriods = {
+      1: { start: new Date(2025, 11, 1), end: new Date(2026, 0, 9) },
+      2: { start: new Date(2025, 11, 15), end: new Date(2026, 0, 9) },
+      3: { start: new Date(2025, 10, 17), end: new Date(2026, 0, 9) }
+    };
+
+    const periods = ['1교시', '2교시', '3교시', '4교시', '5교시', '6교시', '7교시'];
+    const weekdays = ['월', '화', '수', '목', '금'];
+
+    const getClassCount = (grade) => grade === 3 ? 6 : 5;
+
+    const generateDates = (grade) => {
+      const dates = [];
+      const { start, end } = gradePeriods[grade];
+      let current = new Date(start);
+      while (current <= end) {
+        if (current.getDay() >= 1 && current.getDay() <= 5) {
+          dates.push(new Date(current));
+        }
+        current.setDate(current.getDate() + 1);
+      }
+      return dates;
+    };
+
+    const generateAllDates = () => {
+      const dates = [];
+      const earliestStart = new Date(2025, 10, 17);
+      const latestEnd = new Date(2026, 0, 10);
+      let current = new Date(earliestStart);
+      while (current <= latestEnd) {
+        if (current.getDay() >= 1 && current.getDay() <= 5) {
+          dates.push(new Date(current));
+        }
+        current.setDate(current.getDate() + 1);
+      }
+      return dates;
+    };
+
+    const groupByWeek = (dates) => {
+      const weeks = [];
+      let currentWeek = [];
+      dates.forEach((date, index) => {
+        const dayOfWeek = date.getDay();
+        if (dayOfWeek === 1 || currentWeek.length === 0) {
+          if (currentWeek.length > 0) {
+            weeks.push([...currentWeek]);
+            currentWeek = [];
+          }
+        }
+        currentWeek.push(date);
+        if (dayOfWeek === 5 || index === dates.length - 1) {
+          weeks.push([...currentWeek]);
+          currentWeek = [];
+        }
+      });
+      return weeks;
+    };
+
+    const isSpecialDate = (date, grade = selectedGrade) => {
+      if (date.getFullYear() === 2025 && date.getMonth() === 11 && date.getDate() === 30) return '축제';
+      if (date.getFullYear() === 2026 && date.getMonth() === 0 && date.getDate() === 9) return grade === 3 ? '졸업식' : '종업식';
+      if (grade === 3 && date.getFullYear() === 2025 && date.getMonth() === 10 && date.getDate() >= 17 && date.getDate() <= 19) return '2회고사';
+      if (grade === 2 && date.getFullYear() === 2025 && date.getMonth() === 11 && date.getDate() >= 10 && date.getDate() <= 12) return '2회고사';
+      return null;
+    };
+
+    const isPeriodAvailable = (date, periodIndex) => {
+      const day = date.getDay();
+      return !((day === 1 || day === 3) && periodIndex >= 6);
+    };
+
+    const getCellKey = (date, period, classNum, grade = selectedGrade) => {
+      const dateStr = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+      return `${grade}-${classNum}-${dateStr}-${period}`;
+    };
+
+    const getCellActivities = (date, period, grade = selectedGrade) => {
+      const activities = [];
+      const classCount = getClassCount(grade);
+      const allClassKey = getCellKey(date, period, 0, grade);
+      if (schedules[allClassKey]) {
+        activities.push({ classNum: 0, ...schedules[allClassKey] });
+      }
+      for (let i = 1; i <= classCount; i++) {
+        const key = getCellKey(date, period, i, grade);
+        if (schedules[key]) {
+          activities.push({ classNum: i, ...schedules[key] });
+        }
+      }
+      return activities;
+    };
+
+    const formatDate = (date) => {
+      const days = ['일', '월', '화', '수', '목', '금', '토'];
+      return `${date.getMonth() + 1}.${date.getDate()}.(${days[date.getDay()]})`;
+    };
+
+    window.setView = (view) => {
+      currentView = view;
+      render();
+    };
+
+    window.setGrade = (grade) => {
+      selectedGrade = grade;
+      render();
+    };
+
+    window.openModal = (dateStr, period) => {
+      const date = new Date(dateStr);
+      const special = isSpecialDate(date);
+      if (special) return;
+      selectedCell = { date, period };
+      modalData = { class: '', subject: '', activity: '', classNum: null };
+      render();
+    };
+
+    window.closeModal = () => {
+      selectedCell = null;
+      modalData = { class: '', subject: '', activity: '', classNum: null };
+      render();
+    };
+
+    window.selectClass = (classNum) => {
+      const key = getCellKey(selectedCell.date, selectedCell.period, classNum);
+      const displayClass = classNum === 0 ? `${selectedGrade}학년 전체` : `${selectedGrade}-${classNum}`;
+      modalData = {
+        class: displayClass,
+        subject: schedules[key]?.subject || '',
+        activity: schedules[key]?.activity || '',
+        classNum: classNum,
+        key: key
+      };
+      render();
+    };
+
+    window.updateSubject = (value) => {
+      modalData.subject = value;
+    };
+
+    window.updateActivity = (value) => {
+      modalData.activity = value;
+    };
+
+    window.saveSchedule = async () => {
+      if (selectedCell && (modalData.classNum !== null && modalData.classNum !== undefined)) {
+        await setDoc(doc(db, 'schedules', modalData.key), {
+          class: modalData.class,
+          subject: modalData.subject,
+          activity: modalData.activity
+        });
+        closeModal();
+      }
+    };
+
+    window.deleteSchedule = async () => {
+      if (selectedCell && modalData.key) {
+        await deleteDoc(doc(db, 'schedules', modalData.key));
+        closeModal();
+      }
+    };
+
+    function render() {
+      const app = document.getElementById('app');
+      
+      if (currentView === 'home') {
+        app.innerHTML = `
+          <div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-6">
+            <div class="max-w-4xl mx-auto">
+              <div class="bg-white rounded-lg shadow-xl p-8 mb-6">
+                <h1 class="text-4xl font-bold text-gray-800 mb-4">📅 학기말 프로그램 운영</h1>
+                <p class="text-gray-600 mb-8">학년별 프로그램을 관리하거나 전체 일정을 확인하세요.</p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <button onclick="setView('calendar')" class="p-6 bg-gradient-to-br from-purple-500 to-indigo-600 text-white rounded-lg shadow-lg hover:shadow-xl transition-all transform hover:scale-105">
+                    <div class="text-5xl mb-3">📆</div>
+                    <h3 class="text-xl font-bold mb-2">전체 일정 보기</h3>
+                    <p class="text-sm text-purple-100">모든 학년의 프로그램 일정을 달력으로 확인</p>
+                  </button>
+                  <div class="space-y-3">
+                    <h3 class="text-lg font-semibold text-gray-700 mb-3">학년별 프로그램 관리</h3>
+                    ${[1, 2, 3].map(grade => `
+                      <button onclick="setGrade(${grade}); setView('grade')" class="w-full p-4 bg-white border-2 border-indigo-200 rounded-lg hover:border-indigo-400 hover:bg-indigo-50 transition-all text-left">
+                        <div class="flex items-center justify-between">
+                          <span class="text-lg font-semibold text-gray-800">${grade}학년</span>
+                          <span class="text-2xl">👥</span>
+                        </div>
+                      </button>
+                    `).join('')}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      if (currentView === 'calendar') {
+        const dates = generateAllDates();
+        const weeks = groupByWeek(dates);
+        
+        app.innerHTML = `
+          <div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-6">
+            <div class="max-w-7xl mx-auto">
+              <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+                <div class="flex items-center justify-between mb-4">
+                  <h1 class="text-3xl font-bold text-gray-800">📅 전체 학년 일정</h1>
+                  <button onclick="setView('home')" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">🏠 홈으로</button>
+                </div>
+                <div class="bg-blue-50 border-l-4 border-blue-500 p-4 rounded">
+                  <p class="text-blue-800 text-sm">💡 전체 학년의 프로그램 일정을 확인할 수 있습니다. 프로그램을 입력하려면 학년별 프로그램 관리 메뉴를 이용하세요.</p>
+                </div>
+              </div>
+              <div class="bg-white rounded-lg shadow-lg p-6 overflow-x-auto">
+                ${weeks.map(week => `
+                  <div class="mb-8">
+                    <h3 class="text-lg font-semibold text-gray-700 mb-3">${formatDate(week[0])} ~ ${formatDate(week[week.length - 1])}</h3>
+                    <div class="border rounded-lg overflow-hidden">
+                      <table class="w-full">
+                        <thead>
+                          <tr class="bg-indigo-100">
+                            <th class="border p-3 w-32 text-center font-semibold text-gray-700">학년/교시</th>
+                            ${week.map(date => `<th class="border p-3 text-center font-semibold text-gray-700">${formatDate(date)}</th>`).join('')}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${[1, 2, 3].map(grade => `
+                            ${periods.map((period, periodIdx) => `
+                              <tr>
+                                ${periodIdx === 0 ? `<td rowspan="7" class="border p-3 bg-gray-100 text-center font-bold text-lg text-gray-800 align-middle">${grade}학년</td>` : ''}
+                                ${week.map(date => {
+                                  const special = isSpecialDate(date, grade);
+                                  const available = isPeriodAvailable(date, periodIdx);
+                                  const activities = getCellActivities(date, period, grade);
+                                  const { start, end } = gradePeriods[grade];
+                                  const isInPeriod = date >= start && date <= end;
+                                  const is2GradeExam = (grade === 2 && date.getFullYear() === 2025 && date.getMonth() === 11 && date.getDate() >= 10 && date.getDate() <= 12);
+                                  const is3GradeExam = (grade === 3 && date.getFullYear() === 2025 && date.getMonth() === 10 && date.getDate() >= 17 && date.getDate() <= 19);
+                                  const isCeremony = (date.getFullYear() === 2026 && date.getMonth() === 0 && date.getDate() === 9);
+                                  const isFestival = (date.getFullYear() === 2025 && date.getMonth() === 11 && date.getDate() === 30);
+
+                                  if (!isInPeriod && !is2GradeExam && !is3GradeExam && !isCeremony && !isFestival) {
+                                    return '<td class="border p-3 bg-gray-50"></td>';
+                                  }
+                                  if (special && periodIdx === 0) {
+                                    return `<td rowspan="7" class="border p-3 bg-yellow-100 text-center font-bold text-gray-800 align-middle">${special}</td>`;
+                                  }
+                                  if (special) return '';
+                                  if (!available) return '<td class="border p-3 bg-gray-100"></td>';
+                                  return `<td class="border p-2">
+                                    ${activities.length > 0 ? `
+                                      <div class="text-xs space-y-1">
+                                        ${activities.map(activity => `
+                                          <div class="bg-indigo-50 p-1 rounded mb-1">
+                                            <div class="font-semibold text-indigo-700">${activity.class} - ${activity.subject}</div>
+                                            <div class="text-gray-600 text-xs">${activity.activity}</div>
+                                          </div>
+                                        `).join('')}
+                                      </div>
+                                    ` : ''}
+                                  </td>`;
+                                }).join('')}
+                              </tr>
+                            `).join('')}
+                          `).join('')}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      const dates = generateDates(selectedGrade);
+      const weeks = groupByWeek(dates);
+      
+      app.innerHTML = `
+        <div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-6">
+          <div class="max-w-7xl mx-auto">
+            <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+              <div class="flex items-center justify-between mb-4">
+                <h1 class="text-3xl font-bold text-gray-800">📅 학기말 프로그램 운영</h1>
+                <button onclick="setView('home')" class="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">🏠 홈으로</button>
+              </div>
+              <div class="flex gap-3 mb-4">
+                ${[1, 2, 3].map(grade => `
+                  <button onclick="setGrade(${grade})" class="px-6 py-3 rounded-lg font-semibold transition-all ${selectedGrade === grade ? 'bg-indigo-600 text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    ${grade}학년
+                  </button>
+                `).join('')}
+              </div>
+              <div class="bg-indigo-50 border-l-4 border-indigo-500 p-4 rounded">
+                <p class="text-indigo-800 text-sm">💡 해당 날짜의 해당 교시를 클릭하여 활동 내용을 입력하세요.</p>
+              </div>
+            </div>
+            <div class="bg-white rounded-lg shadow-lg p-6 overflow-x-auto">
+              ${weeks.map(week => `
+                <div class="mb-8">
+                  <h3 class="text-lg font-semibold text-gray-700 mb-3">${formatDate(week[0])} ~ ${formatDate(week[week.length - 1])}</h3>
+                  <div class="border rounded-lg overflow-hidden">
+                    <table class="w-full">
+                      <thead>
+                        <tr class="bg-indigo-100">
+                          <th class="border p-3 w-24 text-center font-semibold text-gray-700">교시</th>
+                          ${week.map(date => `<th class="border p-3 text-center font-semibold text-gray-700">${formatDate(date)}</th>`).join('')}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${periods.map((period, periodIdx) => `
+                          <tr>
+                            <td class="border p-3 bg-gray-50 text-center font-medium text-gray-700">${period}</td>
+                            ${week.map(date => {
+                              const special = isSpecialDate(date);
+                              const available = isPeriodAvailable(date, periodIdx);
+                              const activities = getCellActivities(date, period);
+
+                              if (special && periodIdx === 0) {
+                                return `<td rowspan="7" class="border p-3 bg-yellow-100 text-center font-bold text-gray-800">${special}</td>`;
+                              }
+                              if (special) return '';
+                              if (!available) return '<td class="border p-3 bg-gray-100"></td>';
+                              
+                              return `<td onclick='openModal("${date.toISOString()}", "${period}")' class="border p-3 cursor-pointer hover:bg-indigo-50 transition-colors">
+                                ${activities.length > 0 ? `
+                                  <div class="text-sm space-y-1">
+                                    ${activities.map(activity => `
+                                      <div class="bg-white border border-indigo-200 p-2 rounded mb-1">
+                                        <div class="font-semibold text-indigo-700">${activity.class}</div>
+                                        <div class="text-gray-700">${activity.subject}</div>
+                                        <div class="text-gray-500 text-xs mt-1">${activity.activity}</div>
+                                      </div>
+                                    `).join('')}
+                                  </div>
+                                ` : ''}
+                              </td>`;
+                            }).join('')}
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+
+        ${selectedCell ? `
+          <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onclick="if(event.target === this) closeModal()">
+            <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+              <div class="flex items-center gap-2 mb-4">
+                <span class="text-2xl">📖</span>
+                <h2 class="text-xl font-bold text-gray-800">프로그램 입력</h2>
+              </div>
+              <div class="mb-4 p-3 bg-indigo-50 rounded-lg">
+                <p class="text-sm text-gray-700">${formatDate(selectedCell.date)} - ${selectedCell.period}</p>
+              </div>
+              <div class="mb-4">
+                <label class="block text-sm font-semibold text-gray-700 mb-2">학급 선택</label>
+                <div class="mb-3">
+                  <button onclick="selectClass(0)" class="w-full px-6 py-3 rounded-lg font-semibold transition-all ${modalData.classNum === 0 ? 'bg-purple-600 text-white shadow-md' : schedules[getCellKey(selectedCell.date, selectedCell.period, 0)] ? 'bg-green-100 text-green-800 border-2 border-green-300 hover:bg-green-200' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                    전체학급
+                  </button>
+                </div>
+                <div class="grid grid-cols-5 md:grid-cols-6 gap-2">
+                  ${Array.from({ length: getClassCount(selectedGrade) }, (_, i) => i + 1).map(classNum => {
+                    const key = getCellKey(selectedCell.date, selectedCell.period, classNum);
+                    const hasData = schedules[key];
+                    return `
+                      <button onclick="selectClass(${classNum})" class="p-3 rounded-lg font-semibold transition-all ${modalData.classNum === classNum ? 'bg-indigo-600 text-white shadow-md' : hasData ? 'bg-green-100 text-green-800 border-2 border-green-300 hover:bg-green-200' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}">
+                        ${selectedGrade}-${classNum}
+                      </button>
+                    `;
+                  }).join('')}
+                </div>
+              </div>
+              ${(modalData.classNum !== null && modalData.classNum !== undefined) ? `
+                <div class="mb-4">
+                  <label class="block text-sm font-semibold text-gray-700 mb-2">교과명</label>
+                  <input type="text" value="${modalData.subject}" oninput="updateSubject(this.value)" placeholder="예) 국어, 수학" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div class="mb-4">
+                  <label class="block text-sm font-semibold text-gray-700 mb-2">활동 내용</label>
+                  <textarea oninput="updateActivity(this.value)" placeholder="활동 내용을 입력하세요" rows="3" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">${modalData.activity}</textarea>
+                </div>
+                <div class="flex gap-3">
+                  <button onclick="saveSchedule()" class="flex-1 bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors">저장</button>
+                  ${schedules[modalData.key] ? '<button onclick="deleteSchedule()" class="flex-1 bg-red-500 text-white py-3 rounded-lg font-semibold hover:bg-red-600 transition-colors">삭제</button>' : ''}
+                  <button onclick="closeModal()" class="flex-1 bg-gray-200 text-gray-700 py-3 rounded-lg font-semibold hover:bg-gray-300 transition-colors">취소</button>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        ` : ''}
+      `;
+    }
+
+    render();
+  </script>
+</body>
+</html>
